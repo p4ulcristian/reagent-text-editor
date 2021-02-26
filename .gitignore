@@ -7,3 +7,4 @@ package.json
 rte.iml
 shadow-cljs.edn
 *.properties
+.idea
