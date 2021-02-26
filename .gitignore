@@ -8,3 +8,4 @@ rte.iml
 shadow-cljs.edn
 *.properties
 .idea
+.rebel_readline_history
