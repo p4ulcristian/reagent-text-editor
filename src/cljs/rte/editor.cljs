@@ -40,12 +40,14 @@
     (if (not= 0 index)
       (vec (concat
              (subvec coll 0 (dec index))
-             (subvec coll index))))))
+             (subvec coll index)))
+      coll)))
 
 (defn insert-in-string [string position value]
   (apply str (insert-in-vector (mapv #(str %) string) position (str value))))
 
 (defn remove-from-string [string position]
+  (log position " - "(clj->js (remove-from-vector (mapv #(str %) string) position)))
   (apply str (remove-from-vector (mapv #(str %) string) position)))
 
 ;;;;;;;;;;;;;;
@@ -83,20 +85,20 @@
 
 (def nbsp "\u00A0")
 
-(def empty-block {:content nbsp
+(def empty-block {:content ""
                   :type    :div})
 
 (defn get-block-content [index]
   (get-in @text-editor-state [index :content]))
 
 (defn split-string
-   ([string start] (apply str (subvec (mapv identity string) start)))
-   ([string start end] (apply str (subvec (mapv identity string) start end))))
+  ([string start] (apply str (subvec (mapv identity string) start)))
+  ([string start end] (apply str (subvec (mapv identity string) start end))))
 
 (defn add-block-to-editor [index block sub-index]
   (let [this-block (get-block-content index)
         next-block (get-block-content (inc index))]
-    (reset! text-editor-state (assoc-in @text-editor-state [index :content] (split-string this-block 0 sub-index)))
+    (reset! text-editor-state (assoc-in @text-editor-state [index :content] (str (split-string this-block 0 sub-index) nbsp)))
     (reset! text-editor-state
       (insert-in-vector @text-editor-state
         (inc index)
@@ -104,9 +106,11 @@
 
 
 (defn remove-block-from-editor [index]
-  (reset! text-editor-state
-    (remove-from-vector @text-editor-state (inc index)))
-  (log index " torolve " (clj->js (remove-from-vector @text-editor-state index))))
+  (let [prev-block (get-block-content (max 0 (dec index)))
+        this-block (get-block-content index)]
+    (log (str prev-block " - " this-block index))
+    (update-editor-state [(dec index) :content] (str prev-block this-block))
+    (reset! text-editor-state (remove-from-vector @text-editor-state (inc index)))))
 
 ;;;;;;;;;;;;;;;;;;;;
 ;;;;Editor utils;;;;
