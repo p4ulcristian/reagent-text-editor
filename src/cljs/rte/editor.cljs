@@ -35,8 +35,18 @@
            [value]
            (subvec coll index)))))
 
+(defn remove-from-vector [coll index]
+  (if-not (empty? coll)
+    (if (not= 0 index)
+      (vec (concat
+             (subvec coll 0 (dec index))
+             (subvec coll index))))))
+
 (defn insert-in-string [string position value]
   (apply str (insert-in-vector (mapv #(str %) string) position (str value))))
+
+(defn remove-from-string [string position]
+  (apply str (remove-from-vector (mapv #(str %) string) position)))
 
 ;;;;;;;;;;;;;;
 ;;;;Config;;;;
@@ -71,13 +81,33 @@
 (defn update-editor-state [path new]
   (reset! text-editor-state (assoc-in @text-editor-state path new)))
 
-(def empty-block {:content "\u00A0"
+(def nbsp "\u00A0")
+
+(def empty-block {:content nbsp
                   :type    :div})
 
-(defn add-block-to-editor [index block]
+(defn get-block-content [index]
+  (get-in @text-editor-state [index :content]))
+
+(defn split-string
+   ([string start] (apply str (subvec (mapv identity string) start)))
+   ([string start end] (apply str (subvec (mapv identity string) start end))))
+
+(defn add-block-to-editor [index block sub-index]
+  (let [this-block (get-block-content index)
+        next-block (get-block-content (inc index))]
+    (reset! text-editor-state (assoc-in @text-editor-state [index :content] (split-string this-block 0 sub-index)))
+    (reset! text-editor-state
+      (insert-in-vector @text-editor-state
+        (inc index)
+        (assoc block :content (str (split-string this-block sub-index) nbsp))))))
+
+
+(defn remove-block-from-editor [index]
   (reset! text-editor-state
-    (insert-in-vector @text-editor-state
-      index block)))
+    (remove-from-vector @text-editor-state (inc index)))
+  (log index " torolve " (clj->js (remove-from-vector @text-editor-state index))))
+
 ;;;;;;;;;;;;;;;;;;;;
 ;;;;Editor utils;;;;
 ;;;;;;;;;;;;;;;;;;;;
@@ -152,7 +182,7 @@
       (do
         (.preventDefault e)
         (set-cursor-state! {:start-block (inc id)})
-        (add-block-to-editor (inc id) empty-block)
+        (add-block-to-editor id empty-block (:start @cursor-state))
         (add-time-out #(set-cursor-to-block-start id) 0)))))
 
 (defn add-enter-listener []
@@ -161,15 +191,37 @@
 (defn remove-enter-listener []
   (remove-event-listener (text-editor-dom) "keydown" enter-listener))
 
+(defn on-delete-backwards []
+  (cond
+    (> (:start @cursor-state) 0) (set-cursor-state! {:start (max 0 (dec (:start @cursor-state)))})
+    (= (:start @cursor-state) 0) (do
+                                   (remove-block-from-editor (:start-block @cursor-state))
+                                   (set-cursor-state! {:start-block (max 0 (dec (:start-block @cursor-state)))
+                                                       :start       0}))
+
+    :else (do (log "exception delete")
+              {})))
+
 (defn input-listener [event]
   (let [the-keys [(:start-block @cursor-state) :content]]
-    (do
-      (.removeAllRanges (get-selection-object))
-      (update-editor-state the-keys (insert-in-string
-                                      (get-in @text-editor-state the-keys)
-                                      (:start @cursor-state)
-                                      (.-data event)))
-      (set-cursor-state! {:start (inc (:start @cursor-state))}))))
+    (.removeAllRanges (get-selection-object))
+    (log "input: " (.-inputType event))
+    (case (.-inputType event)
+      "insertText" (do
+                     (update-editor-state the-keys (insert-in-string
+                                                     (get-in @text-editor-state the-keys)
+                                                     (:start @cursor-state)
+                                                     (.-data event)))
+                     (set-cursor-state! {:start (inc (:start @cursor-state))}))
+      "deleteContentBackward" (do
+                                (update-editor-state the-keys (remove-from-string
+                                                                (get-in @text-editor-state the-keys)
+                                                                (:start @cursor-state)))
+                                (on-delete-backwards))
+
+      (log (.-inputType event)))))
+
+
 
 (defn add-input-listener []
   (add-event-listener (text-editor-dom) "beforeinput" input-listener))
@@ -178,9 +230,8 @@
   (remove-event-listener (text-editor-dom) "beforeinput" input-listener))
 
 (defn selection-listener [e]
-  (do
-    (.preventDefault e)
-    (set-range)))
+  (.preventDefault e)
+  (set-range))
 
 (defn add-selection-listener []
   (add-event-listener js/document "selectionchange" selection-listener))
@@ -227,7 +278,8 @@
    (for [[id {:keys [type content]}] (map-indexed #(vector %1 %2) state)]
      (case type
        :div ^{:key id} [:div {:style      {:white-space "pre"}
-                              :data-block id} content]
+                              :data-block id}
+                        content]
        [non-existing]))])
 
 ;The content editable, which renders the edn structure in hiccup.
