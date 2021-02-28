@@ -5,6 +5,7 @@
 ;;;;;;;;;;;;;
 ;;;;Utils;;;;
 ;;;;;;;;;;;;;
+(def nbsp "\u00A0")
 
 (def log (.-log js/console))
 
@@ -47,8 +48,11 @@
   (apply str (insert-in-vector (mapv #(str %) string) position (str value))))
 
 (defn remove-from-string [string position]
-  (log position " - "(clj->js (remove-from-vector (mapv #(str %) string) position)))
-  (apply str (remove-from-vector (mapv #(str %) string) position)))
+  (let [new-str (apply str (remove-from-vector (mapv #(str %) string) position))]
+    (if (= "" new-str)
+      nbsp
+      new-str)))
+
 
 ;;;;;;;;;;;;;;
 ;;;;Config;;;;
@@ -83,8 +87,6 @@
 (defn update-editor-state [path new]
   (reset! text-editor-state (assoc-in @text-editor-state path new)))
 
-(def nbsp "\u00A0")
-
 (def empty-block {:content ""
                   :type    :div})
 
@@ -95,20 +97,23 @@
   ([string start] (apply str (subvec (mapv identity string) start)))
   ([string start end] (apply str (subvec (mapv identity string) start end))))
 
+(defn trim-string [string]
+  (case (count string)
+    0 " "
+    1 string
+    string))
+
 (defn add-block-to-editor [index block sub-index]
   (let [this-block (get-block-content index)
         next-block (get-block-content (inc index))]
-    (reset! text-editor-state (assoc-in @text-editor-state [index :content] (str (split-string this-block 0 sub-index) nbsp)))
     (reset! text-editor-state
-      (insert-in-vector @text-editor-state
-        (inc index)
-        (assoc block :content (str (split-string this-block sub-index) nbsp))))))
-
+      (assoc-in @text-editor-state [index :content] (trim-string (split-string this-block 0 sub-index))))
+    (reset! text-editor-state
+      (insert-in-vector @text-editor-state (inc index) (assoc block :content (trim-string (split-string this-block sub-index)))))))
 
 (defn remove-block-from-editor [index]
-  (let [prev-block (get-block-content (max 0 (dec index)))
+  (let [prev-block  (clojure.string/trimr (get-block-content (max 0 (dec index))))
         this-block (get-block-content index)]
-    (log (str prev-block " - " this-block index))
     (update-editor-state [(dec index) :content] (str prev-block this-block))
     (reset! text-editor-state (remove-from-vector @text-editor-state (inc index)))))
 
@@ -154,6 +159,7 @@
 ;Updating the cursor state
 (defn set-range []
   ;We need to get the selection, and check if it has ranges.
+
   (let [selection  (.getSelection js/document)
         has-range? (not= 0 (.-rangeCount selection))]
     ;If it has range(s) we set the cursor-state.
@@ -165,15 +171,17 @@
             [start-block end-block] (get-block-boundaries the-range)]
         ;We check if it is a text-node, we are interested in only those.
         (if is-text-node?
-          (set-cursor-state!
-            {:start       start
-             :end         end
-             :start-block (int start-block)
-             :end-block   (int end-block)}))))))
+          (do
+            (log "range has been reset")
+            (set-cursor-state!
+              {:start       start
+               :end         end
+               :start-block (int start-block)
+               :end-block   (int end-block)})))))))
 
 (defn set-cursor-position [row column]
   (let [selection (.getSelection js/window)]
-    (add-time-out #(.collapse selection (get-block-node row) column) 0)))
+    (.collapse selection (get-block-node row) column)))
 
 
 ;;;;;;;;;;;;;
@@ -182,12 +190,13 @@
 
 (defn enter-listener [e]
   (if (= (.-which e) 13)
-    (let [id (:start-block @cursor-state)]
+    (let [block-index (:start-block @cursor-state)
+          start (:start @cursor-state)]
       (do
         (.preventDefault e)
-        (set-cursor-state! {:start-block (inc id)})
-        (add-block-to-editor id empty-block (:start @cursor-state))
-        (add-time-out #(set-cursor-to-block-start id) 0)))))
+        (set-cursor-state! {:start-block (inc block-index) :start 0})
+        (add-block-to-editor block-index empty-block start)))))
+        ;(add-time-out #(set-cursor-to-block-start id) 0)))))
 
 (defn add-enter-listener []
   (add-event-listener (text-editor-dom) "keydown" enter-listener))
@@ -195,35 +204,52 @@
 (defn remove-enter-listener []
   (remove-event-listener (text-editor-dom) "keydown" enter-listener))
 
-(defn on-delete-backwards []
-  (cond
-    (> (:start @cursor-state) 0) (set-cursor-state! {:start (max 0 (dec (:start @cursor-state)))})
-    (= (:start @cursor-state) 0) (do
-                                   (remove-block-from-editor (:start-block @cursor-state))
-                                   (set-cursor-state! {:start-block (max 0 (dec (:start-block @cursor-state)))
-                                                       :start       0}))
+(defn get-block-content-length [index]
+  (let [text (get-block-content index)
+        only-space? (boolean (= text " "))]
+    (if only-space?
+      0
+      (count text))))
 
-    :else (do (log "exception delete")
-              {})))
+(defn delete-content-backward []
+  (let [the-keys [(:start-block @cursor-state) :content]]
+    (update-editor-state the-keys (remove-from-string
+                                    (get-in @text-editor-state the-keys)
+                                    (:start @cursor-state)))
+    (cond
+      ;If the cursor in not at start of the line
+      (> (:start @cursor-state) 0)
+      (set-cursor-state! {:start (max 0 (dec (:start @cursor-state)))})
+      ;If the cursor is at start [0] of first [0] line
+      (and (= (:start @cursor-state) 0) (= (:start-block @cursor-state) 0))
+      nil
+      ;If the cursor is at the start of some line
+      (= (:start @cursor-state) 0) (do
+                                     (let [block-index  (dec (:start-block @cursor-state))
+                                           block-length (get-block-content-length block-index)]
+                                       (log "how long was: " block-length)
+                                       (remove-block-from-editor (:start-block @cursor-state))
+                                       (set-cursor-state! {:start-block (dec (:start-block @cursor-state))
+                                                           :start       block-length})))
+
+      :else (do (log "exception delete")
+                {}))))
+
+(defn insert-text [event]
+  (let [the-keys [(:start-block @cursor-state) :content]]
+    (update-editor-state the-keys (insert-in-string
+                                    (get-in @text-editor-state the-keys)
+                                    (:start @cursor-state)
+                                    (.-data event)))
+    (set-cursor-state! {:start (inc (:start @cursor-state))})))
 
 (defn input-listener [event]
-  (let [the-keys [(:start-block @cursor-state) :content]]
-    (.removeAllRanges (get-selection-object))
-    (log "input: " (.-inputType event))
-    (case (.-inputType event)
-      "insertText" (do
-                     (update-editor-state the-keys (insert-in-string
-                                                     (get-in @text-editor-state the-keys)
-                                                     (:start @cursor-state)
-                                                     (.-data event)))
-                     (set-cursor-state! {:start (inc (:start @cursor-state))}))
-      "deleteContentBackward" (do
-                                (update-editor-state the-keys (remove-from-string
-                                                                (get-in @text-editor-state the-keys)
-                                                                (:start @cursor-state)))
-                                (on-delete-backwards))
-
-      (log (.-inputType event)))))
+  (.preventDefault event)
+  (.removeAllRanges (get-selection-object))
+  (case (.-inputType event)
+    "insertText" (insert-text event)
+    "deleteContentBackward" (delete-content-backward)
+    (log (.-inputType event))))
 
 
 
@@ -281,7 +307,8 @@
   [:<>
    (for [[id {:keys [type content]}] (map-indexed #(vector %1 %2) state)]
      (case type
-       :div ^{:key id} [:div {:style      {:white-space "pre"}
+       :div ^{:key id} [:div {:style      {:min-height  "1em"
+                                           :white-space "pre-wrap"}
                               :data-block id}
                         content]
        [non-existing]))])
@@ -298,22 +325,25 @@
 
 (defn content-editable []
   (let [last-block (atom 0)
-        style      {:background "#222" :overflow-y "auto"}]
+        style      {:background "#222" :overflow-y "auto"
+                    :display    "flex"}]
     (r/create-class
       {:component-did-update
        (fn []
-         (if (= @last-block (:start-block @cursor-state))
-           (set-cursor-position (:start-block @cursor-state) (:start @cursor-state))
-           (set-cursor-position (:start-block @cursor-state) 0))
+         (log "component updated: "  (clj->js @cursor-state))
+         (set-cursor-position (:start-block @cursor-state) (:start @cursor-state))
          (reset! last-block (:start-block @cursor-state)))
+       ;(log "cursor has been set to: " (clj->js @cursor-state)))
        :reagent-render
        (fn []
+         @cursor-state
          [:div {:style style}
           [:div {:content-editable                  true
                  :id                                text-editor-id
                  :on-focus                          #(add-all-editor-listeners)
                  :on-blur                           #(remove-all-editor-listeners)
-                 :style                             {:padding "10px" :color "white" :height "500px"}
+                 :style                             {:padding "10px" :color "white" :height "500px"
+                                                     :width   "100%"}
                  :suppress-content-editable-warning true}
            [edn->rich-text @text-editor-state]]])})))
 
