@@ -189,7 +189,8 @@
              :end-block   (int end-block)}))))))
 
 (defn set-cursor-position [row column]
-  (let [selection (.getSelection js/window)]
+  (let [selection (get-selection-object)]
+    (.removeAllRanges selection)
     (.collapse selection (get-block-node row) column)))
 
 
@@ -233,10 +234,9 @@
       ;If the cursor is at start [0] of first [0] line
       (and (= (:start @cursor-state) 0) (= (:start-block @cursor-state) 0))
       (do
-        (update-editor-state the-keys (remove-from-string
-                                        (get-in @text-editor-state the-keys)
-                                        (dec (:start @cursor-state))))
-        nil)
+        (log "az a baj hogy: ")
+        (set-cursor-state! {:start-block 0
+                            :start       0}))
       ;If the cursor is at the start of some line
       (= (:start @cursor-state) 0) (do
                                      (let [block-index  (dec (:start-block @cursor-state))
@@ -264,8 +264,11 @@
       (set-cursor-state! {:start (min
                                    (get-block-content-length (:start-block @cursor-state))
                                    (:start @cursor-state))}))
-
-    ;If the cursor is at the ends on  some line
+    ;If the cursor is on the end of the last line
+    (and (= (:start @cursor-state) (get-block-content-length (dec (count @text-editor-state))))
+      (= (:start-block @cursor-state) (dec (count @text-editor-state))))
+    nil
+    ;If the cursor is at the end of some line
     (= (:start @cursor-state) (get-block-content-length (:start-block @cursor-state)))
     (let [this-block (:start-block @cursor-state)
           block-length-before-collapse (get-block-content-length this-block)]
@@ -288,7 +291,6 @@
 
 (defn input-listener [event]
   (.preventDefault event)
-  (.removeAllRanges (get-selection-object))
   (case (.-inputType event)
     "insertText" (insert-text event)
     "deleteContentBackward" (delete-content-backward)
