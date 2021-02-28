@@ -38,11 +38,9 @@
 
 (defn remove-from-vector [coll index]
   (if-not (empty? coll)
-    (if (not= 0 index)
-      (vec (concat
-             (subvec coll 0 (dec index))
-             (subvec coll index)))
-      coll)))
+    (vec (concat
+           (subvec coll 0 index)
+           (subvec coll (inc index))))))
 
 (defn insert-in-string [string position value]
   (apply str (insert-in-vector (mapv #(str %) string) position (str value))))
@@ -111,10 +109,23 @@
     (reset! text-editor-state
       (insert-in-vector @text-editor-state (inc index) (assoc block :content (trim-string (split-string this-block sub-index)))))))
 
-(defn remove-block-from-editor [index]
+(defn collapse-block-to-left [index]
   (let [prev-block  (clojure.string/trimr (get-block-content (max 0 (dec index))))
         this-block (get-block-content index)]
+    (log "torolnem a: " index "-et")
     (update-editor-state [(dec index) :content] (str prev-block this-block))
+    (reset! text-editor-state (remove-from-vector @text-editor-state index))))
+
+(defn collapse-block-to-right [index]
+  (let [this-block (get-block-content index)
+        next-block  (get-block-content (min
+                                         (count @text-editor-state)
+                                         (inc index)))]
+
+    (update-editor-state [index :content] (str this-block next-block))
+    (log "torolni jobbra: " (inc index) " - " (clj->js (remove-from-vector @text-editor-state (inc index))))
+    ;(update-editor-state [index :content] (str this-block next-block))
+    (set-cursor-state! {:start 0 :start-block index})
     (reset! text-editor-state (remove-from-vector @text-editor-state (inc index)))))
 
 ;;;;;;;;;;;;;;;;;;;;
@@ -171,13 +182,11 @@
             [start-block end-block] (get-block-boundaries the-range)]
         ;We check if it is a text-node, we are interested in only those.
         (if is-text-node?
-          (do
-            (log "range has been reset")
-            (set-cursor-state!
-              {:start       start
-               :end         end
-               :start-block (int start-block)
-               :end-block   (int end-block)})))))))
+          (set-cursor-state!
+            {:start       start
+             :end         end
+             :start-block (int start-block)
+             :end-block   (int end-block)}))))))
 
 (defn set-cursor-position [row column]
   (let [selection (.getSelection js/window)]
@@ -213,27 +222,61 @@
 
 (defn delete-content-backward []
   (let [the-keys [(:start-block @cursor-state) :content]]
-    (update-editor-state the-keys (remove-from-string
-                                    (get-in @text-editor-state the-keys)
-                                    (:start @cursor-state)))
     (cond
       ;If the cursor in not at start of the line
       (> (:start @cursor-state) 0)
-      (set-cursor-state! {:start (max 0 (dec (:start @cursor-state)))})
+      (do
+        (update-editor-state the-keys (remove-from-string
+                                        (get-in @text-editor-state the-keys)
+                                        (dec (:start @cursor-state))))
+        (set-cursor-state! {:start (max 0 (dec (:start @cursor-state)))}))
       ;If the cursor is at start [0] of first [0] line
       (and (= (:start @cursor-state) 0) (= (:start-block @cursor-state) 0))
-      nil
+      (do
+        (update-editor-state the-keys (remove-from-string
+                                        (get-in @text-editor-state the-keys)
+                                        (dec (:start @cursor-state))))
+        nil)
       ;If the cursor is at the start of some line
       (= (:start @cursor-state) 0) (do
                                      (let [block-index  (dec (:start-block @cursor-state))
                                            block-length (get-block-content-length block-index)]
-                                       (log "how long was: " block-length)
-                                       (remove-block-from-editor (:start-block @cursor-state))
+                                       (collapse-block-to-left (:start-block @cursor-state))
                                        (set-cursor-state! {:start-block (dec (:start-block @cursor-state))
                                                            :start       block-length})))
 
       :else (do (log "exception delete")
                 {}))))
+
+(defn delete-to-right-from-text-editor []
+  (let [the-keys [(:start-block @cursor-state) :content]]
+    (update-editor-state the-keys
+      (remove-from-string
+        (get-in @text-editor-state the-keys)
+        (:start @cursor-state)))))
+
+(defn delete-content-forward []
+  (cond
+    ;If the cursor in not at start of the line
+    (< (:start @cursor-state) (get-block-content-length (:start-block @cursor-state)))
+    (do
+      (delete-to-right-from-text-editor)
+      (set-cursor-state! {:start (min
+                                   (get-block-content-length (:start-block @cursor-state))
+                                   (:start @cursor-state))}))
+
+    ;If the cursor is at the ends on  some line
+    (= (:start @cursor-state) (get-block-content-length (:start-block @cursor-state)))
+    (let [this-block (:start-block @cursor-state)
+          block-length-before-collapse (get-block-content-length this-block)]
+
+      (collapse-block-to-right (:start-block @cursor-state))
+      (log "mi folyik itt: ")
+      (set-cursor-state! {:start-block this-block
+                          :start       block-length-before-collapse}))
+
+    :else (do (log "exception delete")
+              {})))
 
 (defn insert-text [event]
   (let [the-keys [(:start-block @cursor-state) :content]]
@@ -249,6 +292,7 @@
   (case (.-inputType event)
     "insertText" (insert-text event)
     "deleteContentBackward" (delete-content-backward)
+    "deleteContentForward" (delete-content-forward)
     (log (.-inputType event))))
 
 
@@ -330,10 +374,8 @@
     (r/create-class
       {:component-did-update
        (fn []
-         (log "component updated: "  (clj->js @cursor-state))
          (set-cursor-position (:start-block @cursor-state) (:start @cursor-state))
          (reset! last-block (:start-block @cursor-state)))
-       ;(log "cursor has been set to: " (clj->js @cursor-state)))
        :reagent-render
        (fn []
          @cursor-state
