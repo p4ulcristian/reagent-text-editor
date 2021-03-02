@@ -27,7 +27,7 @@
 (defn get-selection-object []
   (.getSelection js/window))
 
-(defn add-time-out [func timeout]
+(defn add-timeout [func timeout]
   (.setTimeout js/window func timeout))
 
 (defn insert-in-vector [coll index value]
@@ -110,21 +110,18 @@
       (insert-in-vector @text-editor-state (inc index) (assoc block :content (trim-string (split-string this-block sub-index)))))))
 
 (defn collapse-block-to-left [index]
-  (let [prev-block  (clojure.string/trimr (get-block-content (max 0 (dec index))))
+  (let [prev-block (clojure.string/trimr (get-block-content (max 0 (dec index))))
         this-block (get-block-content index)]
-    (log "torolnem a: " index "-et")
     (update-editor-state [(dec index) :content] (str prev-block this-block))
     (reset! text-editor-state (remove-from-vector @text-editor-state index))))
 
 (defn collapse-block-to-right [index]
   (let [this-block (get-block-content index)
-        next-block  (get-block-content (min
-                                         (count @text-editor-state)
-                                         (inc index)))]
+        next-block (get-block-content (min
+                                        (count @text-editor-state)
+                                        (inc index)))]
 
     (update-editor-state [index :content] (str this-block next-block))
-    (log "torolni jobbra: " (inc index) " - " (clj->js (remove-from-vector @text-editor-state (inc index))))
-    ;(update-editor-state [index :content] (str this-block next-block))
     (set-cursor-state! {:start 0 :start-block index})
     (reset! text-editor-state (remove-from-vector @text-editor-state (inc index)))))
 
@@ -135,11 +132,6 @@
 ;We need the node so we can collapse at the start of it
 (defn get-block-node [block-id]
   (first-child-node (select-el-with-attribute "data-block" block-id)))
-
-;We collapse the selection to the start of a node with the respective id
-(defn set-cursor-to-block-start [id]
-  (.collapse (get-selection-object)
-    (get-block-node id) 0))
 
 ;We need the block-id of the text-node which id edited.
 (defn get-block-id [container]
@@ -167,31 +159,37 @@
       true false)))
 
 
-;Updating the cursor state
-(defn set-range []
-  ;We need to get the selection, and check if it has ranges.
-
+(defn get-range-data []
   (let [selection  (.getSelection js/document)
         has-range? (not= 0 (.-rangeCount selection))]
-    ;If it has range(s) we set the cursor-state.
     (if has-range?
       (let [the-range     (.getRangeAt selection 0)
             start         (.-startOffset the-range)
             end           (.-endOffset the-range)
             is-text-node? (selection-text-node? the-range)
             [start-block end-block] (get-block-boundaries the-range)]
-        ;We check if it is a text-node, we are interested in only those.
         (if is-text-node?
-          (set-cursor-state!
+          (do
+            (log "getting range data: " start "-" end)
             {:start       start
              :end         end
              :start-block (int start-block)
-             :end-block   (int end-block)}))))))
+             :end-block   (int end-block)})
+          {}))
+      {})))
 
-(defn set-cursor-position [row column]
-  (let [selection (get-selection-object)]
-    (.removeAllRanges selection)
-    (.collapse selection (get-block-node row) column)))
+;Updating the cursor state
+
+(defn set-cursor-position [{:keys [start end
+                                   start-block end-block] :as state}]
+  (let [selection (get-selection-object)
+        has-range? (not= 0 (.-rangeCount selection))]
+    (if has-range?
+      (let [the-range (.getRangeAt selection 0)]
+        (.setStart the-range (get-block-node start-block) start)
+        (.setEnd the-range (get-block-node start-block) end)))))
+
+
 
 
 ;;;;;;;;;;;;;
@@ -201,12 +199,14 @@
 (defn enter-listener [e]
   (if (= (.-which e) 13)
     (let [block-index (:start-block @cursor-state)
-          start (:start @cursor-state)]
+          start       (:start @cursor-state)]
       (do
         (.preventDefault e)
-        (set-cursor-state! {:start-block (inc block-index) :start 0})
+        (set-cursor-state! {:start-block (inc block-index)
+                            :end-block (inc block-index)
+                            :start 0 :end 0})
         (add-block-to-editor block-index empty-block start)))))
-        ;(add-time-out #(set-cursor-to-block-start id) 0)))))
+;(add-time-out #(set-cursor-to-block-start id) 0)))))
 
 (defn add-enter-listener []
   (add-event-listener (text-editor-dom) "keydown" enter-listener))
@@ -215,7 +215,7 @@
   (remove-event-listener (text-editor-dom) "keydown" enter-listener))
 
 (defn get-block-content-length [index]
-  (let [text (get-block-content index)
+  (let [text        (get-block-content index)
         only-space? (boolean (= text " "))]
     (if only-space?
       0
@@ -230,20 +230,23 @@
         (update-editor-state the-keys (remove-from-string
                                         (get-in @text-editor-state the-keys)
                                         (dec (:start @cursor-state))))
-        (set-cursor-state! {:start (max 0 (dec (:start @cursor-state)))}))
+        (set-cursor-state! {:start (max 0 (dec (:start @cursor-state)))
+                            :end  (max 0 (dec (:start @cursor-state)))}))
       ;If the cursor is at start [0] of first [0] line
       (and (= (:start @cursor-state) 0) (= (:start-block @cursor-state) 0))
-      (do
-        (log "az a baj hogy: ")
-        (set-cursor-state! {:start-block 0
-                            :start       0}))
+      (set-cursor-state! {:start-block 0
+                          :start       0
+                          :end-block       0
+                          :end       0})
       ;If the cursor is at the start of some line
       (= (:start @cursor-state) 0) (do
                                      (let [block-index  (dec (:start-block @cursor-state))
                                            block-length (get-block-content-length block-index)]
                                        (collapse-block-to-left (:start-block @cursor-state))
                                        (set-cursor-state! {:start-block (dec (:start-block @cursor-state))
-                                                           :start       block-length})))
+                                                           :end-block (dec (:start-block @cursor-state))
+                                                           :start       block-length
+                                                           :end block-length})))
 
       :else (do (log "exception delete")
                 {}))))
@@ -270,11 +273,9 @@
     nil
     ;If the cursor is at the end of some line
     (= (:start @cursor-state) (get-block-content-length (:start-block @cursor-state)))
-    (let [this-block (:start-block @cursor-state)
+    (let [this-block                   (:start-block @cursor-state)
           block-length-before-collapse (get-block-content-length this-block)]
-
       (collapse-block-to-right (:start-block @cursor-state))
-      (log "mi folyik itt: ")
       (set-cursor-state! {:start-block this-block
                           :start       block-length-before-collapse}))
 
@@ -287,7 +288,8 @@
                                     (get-in @text-editor-state the-keys)
                                     (:start @cursor-state)
                                     (.-data event)))
-    (set-cursor-state! {:start (inc (:start @cursor-state))})))
+    (set-cursor-state! {:start (inc (:start @cursor-state))
+                        :end (inc (:start @cursor-state))})))
 
 (defn input-listener [event]
   (.preventDefault event)
@@ -306,8 +308,8 @@
   (remove-event-listener (text-editor-dom) "beforeinput" input-listener))
 
 (defn selection-listener [e]
-  (.preventDefault e)
-  (set-range))
+  ;(.preventDefault e)
+  (set-cursor-state! (get-range-data)))
 
 (defn add-selection-listener []
   (add-event-listener js/document "selectionchange" selection-listener))
@@ -315,8 +317,22 @@
 (defn remove-selection-listener []
   (remove-event-listener js/document "selectionchange" selection-listener))
 
+(defn add-selection-start-listener []
+  (add-event-listener js/document "selectstart" #(log "start")))
+
+(defn remove-selection-start-listener []
+  (remove-event-listener js/document "selectstart" selection-listener))
+
+(defn add-selection-end-listener []
+  (add-event-listener js/document "selectionend" #(log "end")))
+
+(defn remove-selection-end-listener []
+  (remove-event-listener js/document "selectend" selection-listener))
+
 (defn add-all-editor-listeners []
   (do (add-selection-listener)
+      ;(add-selection-start-listener)
+      ;(add-selection-end-listener)
       (add-input-listener)
       (add-enter-listener)))
 
@@ -361,26 +377,16 @@
 
 ;The content editable, which renders the edn structure in hiccup.
 
-(defn all-listeners []
-  (do
-    (add-enter-listener)
-    (add-input-listener)
-    (add-selection-listener)
-    (.focus (get-element-by-id text-editor-id))))
-
-
 (defn content-editable []
-  (let [last-block (atom 0)
-        style      {:background "#222" :overflow-y "auto"
+  (let [style      {:background "#222" :overflow-y "auto"
                     :display    "flex"}]
     (r/create-class
       {:component-did-update
        (fn []
-         (set-cursor-position (:start-block @cursor-state) (:start @cursor-state))
-         (reset! last-block (:start-block @cursor-state)))
+         (log "component update" (:start @cursor-state) (:end @cursor-state))
+         (set-cursor-position @cursor-state))
        :reagent-render
        (fn []
-         @cursor-state
          [:div {:style style}
           [:div {:content-editable                  true
                  :id                                text-editor-id
